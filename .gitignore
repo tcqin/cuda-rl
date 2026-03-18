@@ -1,0 +1,24 @@
+# Checkpoints (large model weights)
+checkpoints/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+
+# Secrets / env files
+.env
+*.env
+secrets.json
+*.key
+
+# Modal / HuggingFace token caches
+.modal/
+
+# Editor and local tooling
+.vscode/
+.claude/

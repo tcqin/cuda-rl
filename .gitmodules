@@ -1,0 +1,6 @@
+[submodule "KernelBench"]
+	path = KernelBench
+	url = https://github.com/ScalingIntelligence/KernelBench
+[submodule "kernelbench-tinker"]
+	path = kernelbench-tinker
+	url = https://github.com/ScalingIntelligence/kernelbench-tinker
