@@ -1,6 +1,6 @@
 # cuda-rl
 
-Reinforcement learning for CUDA kernel optimization using [KernelBench](https://github.com/ScalingIntelligence/KernelBench). Trains Qwen3-8B with multi-turn GRPO to generate custom CUDA kernels that outperform PyTorch's default implementations.
+Reinforcement learning for CUDA kernel optimization using [KernelBench](https://github.com/ScalingIntelligence/KernelBench). Trains Qwen3-8B with multi-turn GRPO to generate custom CUDA kernels that outperform PyTorch's default implementations. Training and evaluation are run on [Modal](https://modal.com).
 
 ## Overview
 
