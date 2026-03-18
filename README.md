@@ -87,6 +87,8 @@ After 24 steps, total relative weight change from base Qwen3-8B is **0.0009** �
 - Late attention layers (32–35): `k_proj` and `q_proj` disproportionately active, likely tracking long kernel structure
 - `down_proj` layers systematically change ~3× less than `up_proj`/`gate_proj` across all depths
 
+![Cumulative LoRA delta norm over training steps](figures/delta_norm.png)
+
 ## Repository Structure
 
 ```
