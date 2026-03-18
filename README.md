@@ -9,7 +9,7 @@ The model is given a PyTorch `Model` class and must write a `ModelNew` class tha
 **Reward function:**
 | Outcome | Reward |
 |---|---|
-| Format invalid / cheating detected | 0.0 |
+| Format invalid / cheating detected / too long | 0.0 |
 | Code block present, doesn't compile | 0.01 |
 | Compiles but incorrect | 0.02 |
 | Correct, speedup ≤ 1× | 0.3 – 1.0 (linear) |
@@ -78,6 +78,10 @@ Reduction operations where custom CUDA can realistically beat PyTorch. Multi-tur
 | 28 | Max reduction | 0/8 | 3/8 | 3 | **1.077** |
 | 29 | Min reduction | 2/8 | 4/8 | 2 | **1.111** |
 | 30 | Argmax | 0/8 | 2/8 | 2 | 0.981 |
+
+![Mean best reward over training steps](figures/mean_best_reward.png)
+
+![Mean best completion length over training steps](figures/mean_best_length.png)
 
 ## LoRA Weight Analysis
 
