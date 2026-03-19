@@ -232,6 +232,7 @@ def _feedback_message(eval_result: dict, kernel: str | None, text: str) -> str:
 def run_training(
     run_name: str = "qwen3-8b-kbl1-multiturn-v1-0p45t-3em5lr",
     resume_checkpoint: str = "",
+    resume_stuck: int = 0,
 ):
     """Multi-turn GRPO training over all Level 1 problems, easiest → hardest."""
     os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
@@ -386,7 +387,7 @@ def run_training(
         # Retry any None-result (lock file / transient infra failure)
         retry_indices = [
             i for i, r in first_pass.items()
-            if r.get("error_message", "").startswith("Evaluation returned None")
+            if (r.get("error_message") or "").startswith("Evaluation returned None")
         ]
         if retry_indices:
             print(f"  [eval] retrying {len(retry_indices)} transient None result(s): {retry_indices}")
@@ -511,7 +512,7 @@ def run_training(
     os.makedirs(output_dir, exist_ok=True)
     optimizer.zero_grad()
 
-    consecutive_stuck = 0
+    consecutive_stuck = resume_stuck
     reset_count = 0
     if resume_checkpoint:
         state_path = f"/runs/{run_name}/{resume_checkpoint}/state.json"
@@ -562,6 +563,7 @@ def run_training(
         print(f"\n{'='*80}")
         print(
             f"STEP {global_step + 1} START  ({problem_name})  [problem {problem_idx + 1}/{len(train_ds)}]"
+            f"  stuck={consecutive_stuck}/{STUCK_THRESHOLD}"
         )
         print(f"temp={TEMPERATURE:.2f}  lr={LEARNING_RATE:.2e}  {_now_et()}")
         print(f"{'='*80}")
@@ -626,6 +628,14 @@ def run_training(
                     _print_turn(
                         global_step + 1, turn_num, i, convs[i], texts[i], rewards[i]
                     )
+
+            turn_correct = sum(1 for r in rewards if r > CORRECT_THRESHOLD)
+            turn_mean_reward = sum(rewards) / NUM_GENERATIONS
+            turn_mean_len = sum(c.shape[1] for c in comp_ids) / NUM_GENERATIONS
+            print(
+                f"  [turn {turn_num}] correct={turn_correct}/{NUM_GENERATIONS} "
+                f"mean_reward={turn_mean_reward:.4f}  mean_len={turn_mean_len:.0f} tokens"
+            )
 
             all_texts.append(texts)
             all_kernels.append(kernels)
@@ -826,6 +836,7 @@ def run_training(
                             "global_step": global_step,
                             "problem_idx": 0,
                             "reset_count": reset_count,
+                            "consecutive_stuck": 0,
                         },
                         f,
                     )
@@ -844,7 +855,7 @@ def run_training(
             ckpt = f"{output_dir}/step_{global_step}"
             model.save_pretrained(ckpt)
             with open(f"{ckpt}/state.json", "w") as f:
-                json.dump({"global_step": global_step, "problem_idx": problem_idx}, f)
+                json.dump({"global_step": global_step, "problem_idx": problem_idx, "consecutive_stuck": consecutive_stuck}, f)
             runs_volume.commit()
             print(
                 f"[step {global_step}] Saved checkpoint: {ckpt} (problem_idx={problem_idx})"
@@ -866,5 +877,6 @@ def run_training(
 def main(
     run_name: str = "qwen3-8b-kbl1-multiturn-v1-0p45t-3em5lr",
     resume_checkpoint: str = "",
+    resume_stuck: int = 0,
 ):
-    run_training.remote(run_name=run_name, resume_checkpoint=resume_checkpoint)
+    run_training.remote(run_name=run_name, resume_checkpoint=resume_checkpoint, resume_stuck=resume_stuck)

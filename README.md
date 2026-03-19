@@ -79,9 +79,19 @@ Reduction operations where custom CUDA can realistically beat PyTorch. Multi-tur
 | 29 | Min reduction | 2/8 | 4/8 | 2 | **1.111** |
 | 30 | Argmax | 0/8 | 2/8 | 2 | 0.981 |
 
+### Figures
+
+Steps 11 and 13 were `MinGPTNewGelu` and `Matmul_with_diagonal_matrices`, where the PyTorch baseline is doing far more work than necessary, and the model recognizes the shortcut. In `MinGPTNewGelu`, PyTorch executes the mathematical expression as ~5 separate elementwise kernel launches, each one of which reading and writing the full tensor to global memory. The model fuses all of it into a single kernel that reads each element once. In `Matmul_with_diagonal_matrices`, PyTorch does a full matrix multiplication, but it's really just scaling each row of each matrix by the corresponding diagonal element, which is a single elementwise multiply.
+
 ![Mean best reward over training steps](figures/mean_best_reward.png)
 
+Mean completion length grows during the first epoch as the model attempts to write more difficult kernels.
+
 ![Mean best completion length over training steps](figures/mean_best_length.png)
+
+I clipped the `grad_norm` to 0.5. Step 38 was an especially difficult problem for the model: `CrossEntropyLoss`, which is a log softmax combined with NLL loss, which means each row requires a max reduction, a sum reduction, and a final scalar output. PyTorch's implementation is already highly optimized with fused kernels, and there are many moving parts for the model to get right.
+
+![Grad norm over training steps](figures/grad_norm.png)
 
 ## LoRA Weight Analysis
 
