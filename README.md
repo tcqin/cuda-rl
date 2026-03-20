@@ -23,79 +23,149 @@ The model is given a PyTorch `Model` class and must write a `ModelNew` class tha
 - **Curriculum:** KernelBench Level 1 problems iterated in difficulty order (easiest → hardest)
 - **Evaluation:** Modal-deployed KernelEvaluator on A100-80GB — isolated GPU containers for each kernel, 6 correctness trials + 40 performance trials
 
-## Training Results (Steps 1–30)
+## Training Results (Steps 1–66)
 
-30 steps completed, covering 30 of 55 Level 1 problems (~45–60 min per step on H200).
+66 steps completed: one full pass through all 55 Level 1 problems, then 12 steps into a second epoch before switching to a new training run.
 
 ### Phase 1: Elementwise / Activation Ops (Steps 1–14)
 Simple pointwise operations. Model solves these confidently on turn 1, with multi-turn recovery rarely needed.
 
-| Step | Problem | T1 Correct | Any Correct | Mean Best | Max Best |
-|------|---------|-----------|------------|----------|---------|
-| 1 | ReLU | 6/8 | 8/8 | 0.904 | 0.957 |
-| 2 | LeakyReLU | 7/8 | 7/8 | 0.760 | 0.953 |
-| 3 | HardTanh | 7/8 | 7/8 | 0.835 | 0.966 |
-| 4 | Tanh | 6/8 | 8/8 | 0.816 | 0.945 |
-| 5 | Sigmoid | 6/8 | 7/8 | 0.746 | 0.936 |
-| 6 | Softsign | 6/8 | 6/8 | 2.213 | **3.128** |
-| 7 | Swish | 8/8 | 8/8 | 1.778 | 2.181 |
-| 8 | SELU | 1/8 | 2/8 | 0.253 | 0.952 |
-| 9 | Softplus | 8/8 | 8/8 | 0.886 | 0.947 |
-| 10 | HardSigmoid | 0/8 | 0/8 | 0.020 | 0.020 |
-| 11 | GELU | 2/8 | 4/8 | 0.470 | 0.946 |
-| 12 | MinGPTNewGelu | 6/8 | 8/8 | **7.548** | **7.638** |
-| 13 | Matrix scalar mul | 8/8 | 8/8 | 0.910 | 0.951 |
-| 14 | Diagonal matmul | 8/8 | 8/8 | **10.000** | **10.000** |
+| Step | Problem | T1 Correct | Any Correct | MT Recover | Mean Best | Max Best |
+|------|---------|-----------|------------|-----------|----------|---------|
+| 1 | ReLU | 6/8 | 8/8 | 2 | 0.904 | 0.957 |
+| 2 | LeakyReLU | 7/8 | 7/8 | 0 | 0.760 | 0.953 |
+| 3 | HardTanh | 7/8 | 7/8 | 0 | 0.835 | 0.966 |
+| 4 | Tanh | 6/8 | 8/8 | 2 | 0.816 | 0.945 |
+| 5 | Sigmoid | 6/8 | 7/8 | 1 | 0.746 | 0.936 |
+| 6 | Softsign | 6/8 | 6/8 | 0 | 2.213 | **3.128** |
+| 7 | Swish | 8/8 | 8/8 | 0 | 1.778 | 2.181 |
+| 8 | SELU | 1/8 | 2/8 | 1 | 0.253 | 0.952 |
+| 9 | Softplus | 8/8 | 8/8 | 0 | 0.886 | 0.947 |
+| 10 | HardSigmoid | 0/8 | 0/8 | 0 | 0.020 | 0.020 |
+| 11 | GELU | 2/8 | 4/8 | 2 | 0.470 | 0.946 |
+| 12 | MinGPTNewGelu | 6/8 | 8/8 | 2 | **7.548** | **7.638** |
+| 13 | Matrix scalar mul | 8/8 | 8/8 | 0 | 0.910 | 0.951 |
+| 14 | Diagonal matmul | 8/8 | 8/8 | 0 | **10.000** | **10.000** |
 
-Highlights: step 14 (diagonal matmul) hits the 10× cap — the model learns to recognize this as elementwise multiplication. Step 12 (MinGPT GELU polynomial approximation) achieves 7.55× mean speedup across trajectories.
+Highlights: step 14 (diagonal matmul) hits the 10× cap — the model learns to recognize this as elementwise multiplication rather than a full GEMM. Step 12 (MinGPT GELU) achieves 7.55× mean speedup by fusing ~5 PyTorch kernel launches into one. Step 36 (Softmax, below) also hits the cap.
 
 ### Phase 2: General Matmul (Steps 15–25)
 GEMM problems where the baseline is cuBLAS. The model produces correct kernels but can't beat the highly optimized library — best rewards plateau around 0.4–0.5×.
 
-| Step | Problem | T1 Correct | Any Correct | MT Recover | Max Best |
-|------|---------|-----------|------------|-----------|---------|
-| 15 | Matrix-vector mul | 0/8 | 0/8 | 0 | 0.020 |
-| 16 | Tall-skinny matmul | 0/8 | 4/8 | 4 | 0.466 |
-| 17 | Square matmul | 1/8 | 1/8 | 0 | 0.487 |
-| 18 | Standard matmul | 0/8 | 1/8 | 1 | 0.484 |
-| 19 | Small-K matmul | 2/8 | 4/8 | 2 | 0.476 |
-| 20 | Symmetric matmul | 1/8 | 2/8 | 1 | 0.489 |
-| 21 | Irregular matmul | 2/8 | 3/8 | 1 | 0.494 |
-| 22 | 3D tensor matmul | 1/8 | 6/8 | 5 | 0.424 |
-| 23 | Transposed matmul | 0/8 | 1/8 | 1 | 0.396 |
-| 24 | Large-K matmul | 0/8 | 1/8 | 1 | 0.316 |
-| 25 | 4D tensor matmul | 2/8 | 6/8 | 4 | 0.404 |
+| Step | Problem | T1 Correct | Any Correct | MT Recover | Mean Best | Max Best |
+|------|---------|-----------|------------|-----------|----------|---------|
+| 15 | Matrix-vector mul | 0/8 | 0/8 | 0 | 0.020 | 0.020 |
+| 16 | Tall-skinny matmul | 0/8 | 4/8 | 4 | 0.199 | 0.466 |
+| 17 | Square matmul | 1/8 | 1/8 | 0 | 0.076 | 0.487 |
+| 18 | Standard matmul | 0/8 | 1/8 | 1 | 0.077 | 0.484 |
+| 19 | Small-K matmul | 2/8 | 4/8 | 2 | 0.186 | 0.476 |
+| 20 | Symmetric matmul | 1/8 | 2/8 | 1 | 0.136 | 0.489 |
+| 21 | Irregular matmul | 2/8 | 3/8 | 1 | 0.161 | 0.494 |
+| 22 | 3D tensor matmul | 1/8 | 6/8 | 5 | 0.296 | 0.424 |
+| 23 | Transposed-both matmul | 0/8 | 1/8 | 1 | 0.068 | 0.424 |
+| 24 | Large-K matmul | 0/8 | 1/8 | 1 | 0.056 | 0.316 |
+| 25 | 4D tensor matmul | 2/8 | 6/8 | 4 | 0.293 | 0.402 |
 
-Multi-turn recovery becomes critical here — the model frequently fails on turn 1 but repairs compilation/correctness errors across turns. However, none of the correct kernels beat cuBLAS.
+Multi-turn recovery becomes critical here — the model frequently fails on turn 1 but repairs compilation/correctness errors across turns. None of the correct kernels beat cuBLAS.
 
-### Phase 3: Reductions (Steps 26–30)
-Reduction operations where custom CUDA can realistically beat PyTorch. Multi-turn recovery surges (3–5 per step), and some trajectories begin exceeding 1× speedup.
+### Phase 3: Reductions (Steps 26–31)
+Reduction operations where custom CUDA can realistically beat PyTorch. Some trajectories exceed 1× speedup for the first time.
 
-| Step | Problem | T1 Correct | Any Correct | MT Recover | Max Best |
-|------|---------|-----------|------------|-----------|---------|
-| 26 | Sum reduction | 1/8 | 5/8 | 4 | 0.973 |
-| 27 | Mean reduction | 1/8 | 6/8 | 5 | 0.970 |
-| 28 | Max reduction | 0/8 | 3/8 | 3 | **1.077** |
-| 29 | Min reduction | 2/8 | 4/8 | 2 | **1.111** |
-| 30 | Argmax | 0/8 | 2/8 | 2 | 0.981 |
+| Step | Problem | T1 Correct | Any Correct | MT Recover | Mean Best | Max Best |
+|------|---------|-----------|------------|-----------|----------|---------|
+| 26 | Sum reduction | 1/8 | 5/8 | 4 | 0.612 | 0.971 |
+| 27 | Mean reduction | 2/8 | 4/8 | 2 | 0.483 | 0.972 |
+| 28 | Max reduction | 0/8 | 3/8 | 3 | 0.390 | **1.071** |
+| 29 | Min reduction | 2/8 | 3/8 | 1 | 0.421 | **1.122** |
+| 30 | Argmax | 0/8 | 0/8 | 0 | 0.014 | 0.020 |
+| 31 | Argmin | 0/8 | 4/8 | 4 | 0.534 | **1.089** |
+
+### Phase 4: Norms and Losses (Steps 32–44)
+Normalization layers and loss functions — a mix of multi-pass reductions, numerically sensitive ops, and PyTorch-optimized fused kernels. Model struggles significantly except for a few outliers.
+
+| Step | Problem | T1 Correct | Any Correct | MT Recover | Mean Best | Max Best |
+|------|---------|-----------|------------|-----------|----------|---------|
+| 32 | HuberLoss | 0/8 | 2/8 | 2 | 0.158 | 0.762 |
+| 33 | L1Norm | 0/8 | 0/8 | 0 | 0.018 | 0.020 |
+| 34 | FrobeniusNorm | 3/8 | 5/8 | 2 | 0.429 | 0.734 |
+| 35 | L2Norm | 1/8 | 3/8 | 2 | 0.146 | 0.389 |
+| 36 | Softmax | 3/8 | 5/8 | 2 | 1.430 | **10.000** |
+| 37 | LogSoftmax | 2/8 | 3/8 | 1 | 0.142 | 0.373 |
+| 38 | KLDivLoss | 0/8 | 0/8 | 0 | 0.020 | 0.020 |
+| 39 | CrossEntropyLoss | 0/8 | 0/8 | 0 | 0.010 | 0.010 |
+| 40 | TripletMarginLoss | 2/8 | 6/8 | 4 | 0.650 | 0.891 |
+| 41 | RMSNorm | 2/8 | 4/8 | 2 | 0.662 | 1.631 |
+| 42 | LayerNorm | 0/8 | 2/8 | 2 | 1.057 | **7.417** |
+| 43 | InstanceNorm | 0/8 | 0/8 | 0 | 0.016 | 0.020 |
+| 44 | BatchNorm | 0/8 | 1/8 | 1 | 0.134 | 0.955 |
+
+Step 36 (Softmax) is a major outlier — one trajectory hits the 10× cap, likely exploiting the online softmax trick (single-pass max+sum+normalize). Step 42 (LayerNorm) similarly sees one trajectory reach 7.4× by fusing the two-pass reduction. Step 39 (CrossEntropyLoss) was the hardest problem of the phase: log softmax combined with NLL loss requires a max reduction, a sum reduction, and a scalar output per row — PyTorch's implementation is already highly fused.
+
+### Phase 5: Spatial Pooling (Steps 45–48)
+Pooling operations with non-trivial output size formulas. Correct kernels occasionally beat PyTorch with custom memory access patterns, but T1 accuracy is low.
+
+| Step | Problem | T1 Correct | Any Correct | MT Recover | Mean Best | Max Best |
+|------|---------|-----------|------------|-----------|----------|---------|
+| 45 | Max Pool 1D | 0/8 | 1/8 | 1 | 0.208 | **1.546** |
+| 46 | Avg Pool 2D | 0/8 | 0/8 | 0 | 0.016 | 0.020 |
+| 47 | Max Pool 2D | 1/8 | 1/8 | 0 | 0.184 | **1.355** |
+| 48 | Max Pool 3D | 1/8 | 1/8 | 0 | 0.156 | **1.139** |
+
+### Phase 6: Sequential Scans (Steps 49–52)
+Cumulative operations that are inherently hard to parallelize. The model's CUDA kernels are correct but can't overcome PyTorch's highly tuned implementations.
+
+| Step | Problem | T1 Correct | Any Correct | MT Recover | Mean Best | Max Best |
+|------|---------|-----------|------------|-----------|----------|---------|
+| 49 | cumsum | 2/8 | 2/8 | 0 | 0.112 | 0.415 |
+| 50 | cumprod | 4/8 | 4/8 | 0 | 0.223 | 0.462 |
+| 51 | cumsum reverse | 2/8 | 2/8 | 0 | 0.228 | 1.000 |
+| 52 | masked cumsum | 0/8 | 0/8 | 0 | 0.019 | 0.020 |
+
+### Phase 7: Convolutions and Curriculum Reset (Steps 53–54)
+3D convolutions — the hardest problems in the curriculum. Two consecutive stuck steps combined with the prior stuck step from step 52 triggered a curriculum reset after step 54.
+
+| Step | Problem | T1 Correct | Any Correct | MT Recover | Mean Best | Max Best |
+|------|---------|-----------|------------|-----------|----------|---------|
+| 53 | 3D conv (square) | 0/8 | 0/8 | 0 | 0.016 | 0.020 |
+| 54 | 3D conv (asymmetric) | 0/8 | 0/8 | 0 | 0.014 | 0.020 |
+
+After step 54, 3 consecutive stuck steps triggered a curriculum reset — the model restarted from the easiest problem (ReLU).
+
+### Epoch 2 (Steps 55–66)
+Second pass through the curriculum after the curriculum reset. The elementwise problems are almost fully solved on turn 1 — a clear sign of retained learning — but mean completion length has collapsed to ~500–1800 tokens (vs. ~2000–6000 in epoch 1), indicating thinking collapse. This run was terminated at step 66 to start a new run (`qwen3-8b-kbl1-mt-v2`) initialized from the step 51 checkpoint, with higher temperature (0.6), lower LR (2e-5), larger thinking budget (4096 tokens), and a thinking length penalty.
+
+| Step | Problem | T1 Correct | Any Correct | MT Recover | Mean Best | Max Best | Mean Len |
+|------|---------|-----------|------------|-----------|----------|---------|---------|
+| 55 | ReLU | 8/8 | 8/8 | 0 | 0.954 | 0.957 | 1447 |
+| 56 | LeakyReLU | 8/8 | 8/8 | 0 | 0.954 | 0.963 | 1840 |
+| 57 | HardTanh | 8/8 | 8/8 | 0 | 0.954 | 0.958 | 947 |
+| 58 | Tanh | 8/8 | 8/8 | 0 | 0.926 | 0.940 | 497 |
+| 59 | Sigmoid | 7/8 | 7/8 | 0 | 0.817 | 0.937 | 595 |
+| 60 | Softsign | 8/8 | 8/8 | 0 | **3.146** | **3.159** | 721 |
+| 61 | Swish | 8/8 | 8/8 | 0 | 2.177 | 2.220 | 595 |
+| 62 | SELU | 2/8 | 3/8 | 1 | 0.367 | 0.954 | 795 |
+| 63 | Softplus | 8/8 | 8/8 | 0 | 0.913 | 0.955 | 466 |
+| 64 | HardSigmoid | 0/8 | 1/8 | 1 | 0.137 | 0.955 | 905 |
+| 65 | GELU | 0/8 | 3/8 | 3 | 0.347 | 0.905 | 496 |
+| 66 | MinGPTNewGelu | 3/8 | 4/8 | 1 | 3.558 | **7.647** | 673 |
 
 ### Figures
 
-Steps 11 and 13 were `MinGPTNewGelu` and `Matmul_with_diagonal_matrices`, where the PyTorch baseline is doing far more work than necessary, and the model recognizes the shortcut. In `MinGPTNewGelu`, PyTorch executes the mathematical expression as ~5 separate elementwise kernel launches, each one of which reading and writing the full tensor to global memory. The model fuses all of it into a single kernel that reads each element once. In `Matmul_with_diagonal_matrices`, PyTorch does a full matrix multiplication, but it's really just scaling each row of each matrix by the corresponding diagonal element, which is a single elementwise multiply.
+Steps 12 and 14 (`MinGPTNewGelu` and `Matmul_with_diagonal_matrices`) are the standout examples where the PyTorch baseline is doing far more work than necessary. In `MinGPTNewGelu`, PyTorch executes the expression as ~5 separate elementwise kernel launches; the model fuses them into one. In `Matmul_with_diagonal_matrices`, PyTorch does a full O(N³) multiply when the operation is really just elementwise row-scaling. Step 36 (`Softmax`) achieves 10× via online softmax — fusing the max, sum, and normalize passes.
 
 ![Mean best reward over training steps](figures/mean_best_reward.png)
 
-Mean completion length grows during the first epoch as the model attempts to write more difficult kernels. Around step 42, the model starts to suppress its chain-of-thought because the training signal doesn't reward the intermediate reasoning steps, which is an example of thinking collapse. However, the thinking is clearly still additive because it allows the model to explore ways to improve upon its CUDA kernel implementations. I attempted to remedy this by cherry-picking the step 42 checkpoint, increasing the temperature slightly from 0.45 to 0.60, decreasing the learning rate from 3e-5 to 2e-5, and adding a thinking length penalty: `thinking_multiplier = 1.0 / (1.0 + math.exp(NUM_TOKENS / 256))`. 
+Mean completion length grows during the first epoch as the model attempts progressively harder kernels, then collapses sharply in epoch 2 — an example of thinking collapse. The model learned to suppress `<think>` blocks because shorter completions reduced variance without hurting reward enough. The new run addresses this with a sigmoid thinking length penalty: `thinking_multiplier = 1 / (1 + exp(-N_tokens / 256))`, which applies a 0.5× multiplier at zero thinking tokens and approaches 1.0 above ~1024 tokens.
 
 ![Mean best completion length over training steps](figures/mean_best_length.png)
 
-I clipped the `grad_norm` to 0.5. Step 38 was an especially difficult problem for the model: `CrossEntropyLoss`, which is a log softmax combined with NLL loss, which means each row requires a max reduction, a sum reduction, and a final scalar output. PyTorch's implementation is already highly optimized with fused kernels. The model was unable to write a successful CUDA kernel despite having 8 parallel trajectories and 4 turns per trajectory.
+Grad norm is clipped to 0.5. Step 39 (`CrossEntropyLoss`) and steps 53–54 (3D convolutions) were the hardest problems — zero correct kernels across all 8 trajectories and 4 turns.
 
 ![Grad norm over training steps](figures/grad_norm.png)
 
 ## LoRA Weight Analysis
 
-After 39 steps, total relative weight change from base Qwen3-8B is **0.0011** — the model is in early-stage adaptation. Most-changed layers:
+After 66 steps, total relative weight change from base Qwen3-8B is **0.0015** — the model is in early-stage adaptation. Most-changed layers:
 
 - Early MLP layers (0–5): `up_proj` and `gate_proj` change most, likely learning CUDA-specific syntax patterns
 - Late attention layers (32–35): `k_proj` and `q_proj` disproportionately active, likely tracking long kernel structure

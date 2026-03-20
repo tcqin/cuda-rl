@@ -6,13 +6,13 @@ For each model:
   - Per-problem score = mean of top-{TOP_K_SCORE} trajectory best rewards
   - Final score = mean of per-problem scores across the test set
 
-Edit EVAL_MODELS to change which checkpoints are compared.
+Launch (single checkpoint):
+    modal run train/eval_checkpoints.py --run-name <run_name> --label s28
 
-Launch all models in parallel:
-    modal run train/eval_checkpoints.py
+Launch (base model):
+    modal run train/eval_checkpoints.py --run-name <run_name> --label base
 
-Launch a single model (for debugging):
-    modal run train/eval_checkpoints.py --label base
+Checkpoints are loaded from the Modal volume at /runs/<run_name>/step_<N>/.
 """
 
 from __future__ import annotations
@@ -55,23 +55,8 @@ eval_image = (
 app = modal.App("kernelrl-eval")
 
 # =============================================================================
-# Configuration — edit these to change what is evaluated
+# Configuration
 # =============================================================================
-
-# Volume subdirectory containing checkpoints (same as training run_name)
-RUN_NAME = "qwen3-8b-kbl1-multiturn-v1-0p45t-3em5lr"
-
-# Models to evaluate.
-#   label      : short name used for output files and the summary table
-#   checkpoint : step directory inside the volume (None = base model, no LoRA)
-EVAL_MODELS: list[dict] = [
-    {"label": "base", "checkpoint": None},
-    {"label": "s20",  "checkpoint": "step_20"},
-    {"label": "s25",  "checkpoint": "step_25"},
-    {"label": "s30",  "checkpoint": "step_30"},
-    {"label": "s35",  "checkpoint": "step_35"},
-    {"label": "s40",  "checkpoint": "step_40"},
-]
 
 # Generation
 MODEL_NAME      = "Qwen/Qwen3-8B"
@@ -230,7 +215,7 @@ def _assistant_memory(kernel: str | None, summary: str) -> str:
     volumes={"/runs": runs_volume},
     secrets=[modal.Secret.from_name("hf-secret")],
 )
-def evaluate_model(label: str, checkpoint: str | None) -> dict:
+def evaluate_model(run_name: str, label: str, checkpoint: str | None) -> dict:
     """Evaluate one model on the full Level 1 test set and return results."""
     import re
     import torch
@@ -259,7 +244,7 @@ def evaluate_model(label: str, checkpoint: str | None) -> dict:
     )
 
     if checkpoint is not None:
-        ckpt_path = f"/runs/{RUN_NAME}/{checkpoint}"
+        ckpt_path = f"/runs/{run_name}/{checkpoint}"
         print(f"Loading LoRA from {ckpt_path}")
         model = PeftModel.from_pretrained(base_model, ckpt_path, is_trainable=False)
     else:
@@ -350,7 +335,7 @@ def evaluate_model(label: str, checkpoint: str | None) -> dict:
         return comp_texts, comp_lens
 
     # ── Output directory ──────────────────────────────────────────────────────
-    out_dir  = f"/runs/{RUN_NAME}/eval_results"
+    out_dir  = f"/runs/{run_name}/eval_results"
     out_file = f"{out_dir}/{label}.json"
     os.makedirs(out_dir, exist_ok=True)
 
@@ -509,9 +494,8 @@ def evaluate_model(label: str, checkpoint: str | None) -> dict:
 def _resolve(label: str) -> dict:
     """
     Resolve a label to a {label, checkpoint} dict.
-      "base"      -> checkpoint=None
-      "s28"       -> checkpoint="step_28"
-      anything in EVAL_MODELS -> use that entry
+      "base"  -> checkpoint=None
+      "s28"   -> checkpoint="step_28"
     """
     import re
     if label == "base":
@@ -519,41 +503,27 @@ def _resolve(label: str) -> dict:
     m = re.fullmatch(r"s(\d+)", label)
     if m:
         return {"label": label, "checkpoint": f"step_{m.group(1)}"}
-    for entry in EVAL_MODELS:
-        if entry["label"] == label:
-            return entry
     raise ValueError(
-        f"Cannot resolve label '{label}'. "
-        f"Use 'base', 's<N>' (e.g. 's28'), or one of: {[e['label'] for e in EVAL_MODELS]}"
+        f"Cannot resolve label '{label}'. Use 'base' or 's<N>' (e.g. 's28')."
     )
 
 
 @app.local_entrypoint()
-def main(label: str = ""):
+def main(run_name: str, label: str):
     """
-    Evaluate all models in EVAL_MODELS in parallel.
-    Pass --label <name> to run a single model:
-      --label base   evaluates the base model
-      --label s28    evaluates the step_28 checkpoint
-      --label s40    evaluates the step_40 checkpoint
+    Evaluate a checkpoint on the Level 1 test set.
+
+    Examples:
+        modal run train/eval_checkpoints.py --run-name qwen3-8b-kbl1-mt-v2-0p6t-2em5lr --label s28
+        modal run train/eval_checkpoints.py --run-name qwen3-8b-kbl1-mt-v2-0p6t-2em5lr --label base
     """
-    if label:
-        models = [_resolve(label)]
-    else:
-        models = EVAL_MODELS
+    model = _resolve(label)
+    print(f"Launching evaluation: run_name={run_name}  label={model['label']}  checkpoint={model['checkpoint']}")
+    result = evaluate_model.remote(run_name, model["label"], model["checkpoint"])
 
-    print(f"Launching evaluation for {len(models)} model(s): {[m['label'] for m in models]}")
-
-    futures = [evaluate_model.spawn(m["label"], m["checkpoint"]) for m in models]
-    results = [f.get() for f in futures]
-
-    # Summary table
     print("\n" + "=" * 60)
     print(f"EVALUATION SUMMARY  (top-{TOP_K_SCORE} avg per problem)")
     print("=" * 60)
-    print(f"{'Label':<12}  {'Checkpoint':<20}  {'Score':>8}  {'# Problems':>12}")
-    print("-" * 60)
-    for r in sorted(results, key=lambda x: x["final_score"], reverse=True):
-        chk = r["checkpoint"] or "none (base)"
-        print(f"{r['label']:<12}  {chk:<20}  {r['final_score']:>8.4f}  {r['num_problems']:>12}")
+    chk = result["checkpoint"] or "none (base)"
+    print(f"{result['label']:<12}  {chk:<20}  {result['final_score']:>8.4f}  {result['num_problems']:>12} problems")
     print("=" * 60)
