@@ -97,6 +97,7 @@ STRICT_CHECKS = [
 
 CHAT_KWARGS = {"enable_thinking": True, "thinking_budget": 1024}
 
+
 # System prompt for multi-turn: adds iterative-improvement framing and summary requirement.
 MULTITURN_SYSTEM_PROMPT = (
     "You are an expert CUDA kernel engineer optimizing PyTorch models for NVIDIA A100 "
@@ -117,6 +118,23 @@ MULTITURN_SYSTEM_PROMPT = (
 # =============================================================================
 # Reward + Feedback helpers (module-level so they're importable inside Modal)
 # =============================================================================
+
+
+THINKING_SIGMOID_SCALE = 256  # tokens at which sigmoid gradient is steepest (~0.88 at 2x this value)
+
+
+def _thinking_multiplier(text: str) -> float:
+    """Sigmoid penalty for short thinking blocks: 1 / (1 + exp(-n_tokens / THINKING_SIGMOID_SCALE))."""
+    import math
+
+    start = text.find("<think>")
+    end = text.find("</think>")
+    if start == -1 or end == -1:
+        n_tokens = 0
+    else:
+        think_text = text[start + len("<think>"): end]
+        n_tokens = len(think_text) // 4  # rough char-to-token estimate
+    return 1.0 / (1.0 + math.exp(-n_tokens / THINKING_SIGMOID_SCALE))
 
 
 def _compute_reward(eval_result: dict, kernel_code: str = "") -> float:
@@ -232,7 +250,11 @@ def _feedback_message(eval_result: dict, kernel: str | None, text: str) -> str:
 def run_training(
     run_name: str = "qwen3-8b-kbl1-multiturn-v1-0p45t-3em5lr",
     resume_checkpoint: str = "",
+    resume_run: str = "",
     resume_stuck: int = 0,
+    temperature: float = TEMPERATURE,
+    lr: float = LEARNING_RATE,
+    thinking_budget: int = 1024,
 ):
     """Multi-turn GRPO training over all Level 1 problems, easiest → hardest."""
     os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
@@ -258,13 +280,16 @@ def run_training(
     # ── W&B ──────────────────────────────────────────────────────────────────
     os.environ["WANDB_HTTP_TIMEOUT"] = "60"
     os.environ["WANDB_GRAPHQL_TIMEOUT"] = "60"
+    chat_kwargs = {"enable_thinking": True, "thinking_budget": thinking_budget}
+
     wandb.init(
         project=WANDB_PROJECT,
         name=run_name,
         config={
             "model": MODEL_NAME,
-            "lr": LEARNING_RATE,
-            "temperature": TEMPERATURE,
+            "lr": lr,
+            "temperature": temperature,
+            "thinking_budget": thinking_budget,
             "num_generations": NUM_GENERATIONS,
             "num_turns": NUM_TURNS,
             "max_new_tokens": MAX_NEW_TOKENS,
@@ -291,7 +316,8 @@ def run_training(
         attn_implementation="flash_attention_2",
     )
     if resume_checkpoint:
-        checkpoint_path = f"/runs/{run_name}/{resume_checkpoint}"
+        src_run = resume_run if resume_run else run_name
+        checkpoint_path = f"/runs/{src_run}/{resume_checkpoint}"
         print(f"Resuming LoRA weights from {checkpoint_path}")
         model = PeftModel.from_pretrained(
             base_model, checkpoint_path, is_trainable=True
@@ -329,7 +355,7 @@ def run_training(
     # ── Optimizer ────────────────────────────────────────────────────────────
     optimizer = AdamW(
         [p for p in model.parameters() if p.requires_grad],
-        lr=LEARNING_RATE,
+        lr=lr,
         betas=(0.9, 0.999),
         eps=1e-8,
     )
@@ -404,7 +430,7 @@ def run_training(
     ) -> tuple[list[str], list[torch.Tensor], list[torch.Tensor]]:
         texts = [
             tokenizer.apply_chat_template(
-                conv, tokenize=False, add_generation_prompt=True, **CHAT_KWARGS
+                conv, tokenize=False, add_generation_prompt=True, **chat_kwargs
             )
             for conv in conversations
         ]
@@ -515,29 +541,37 @@ def run_training(
     consecutive_stuck = resume_stuck
     reset_count = 0
     if resume_checkpoint:
-        state_path = f"/runs/{run_name}/{resume_checkpoint}/state.json"
-        if os.path.exists(state_path):
-            with open(state_path) as f:
-                state = json.load(f)
-            global_step = state["global_step"]
-            problem_idx = state["problem_idx"]
+        if resume_run:
+            # Cross-run resume: load weights from another run but start curriculum fresh
             print(
-                f"Resumed from state.json: global_step={global_step}, problem_idx={problem_idx}"
+                f"Cross-run resume from {resume_run}/{resume_checkpoint} — starting curriculum from beginning"
             )
+            global_step = 0
+            problem_idx = 0
         else:
-            # No state.json — infer from checkpoint name (e.g. "step_20" → 20)
-            try:
-                global_step = int(resume_checkpoint.rsplit("_", 1)[-1])
-            except ValueError:
-                raise ValueError(
-                    f"Cannot infer step number from checkpoint name '{resume_checkpoint}'. "
-                    "Expected format: step_N"
+            state_path = f"/runs/{run_name}/{resume_checkpoint}/state.json"
+            if os.path.exists(state_path):
+                with open(state_path) as f:
+                    state = json.load(f)
+                global_step = state["global_step"]
+                problem_idx = state["problem_idx"]
+                print(
+                    f"Resumed from state.json: global_step={global_step}, problem_idx={problem_idx}"
                 )
-            problem_idx = global_step % len(train_ds)
-            print(
-                f"No state.json found — inferred global_step={global_step}, problem_idx={problem_idx}"
-            )
-        print(f"  Starting on problem: {train_ds[problem_idx]['problem_name']}")
+            else:
+                # No state.json — infer from checkpoint name (e.g. "step_20" → 20)
+                try:
+                    global_step = int(resume_checkpoint.rsplit("_", 1)[-1])
+                except ValueError:
+                    raise ValueError(
+                        f"Cannot infer step number from checkpoint name '{resume_checkpoint}'. "
+                        "Expected format: step_N"
+                    )
+                problem_idx = global_step % len(train_ds)
+                print(
+                    f"No state.json found — inferred global_step={global_step}, problem_idx={problem_idx}"
+                )
+            print(f"  Starting on problem: {train_ds[problem_idx]['problem_name']}")
     else:
         problem_idx = 0
         global_step = 0
@@ -565,7 +599,7 @@ def run_training(
             f"STEP {global_step + 1} START  ({problem_name})  [problem {problem_idx + 1}/{len(train_ds)}]"
             f"  stuck={consecutive_stuck}/{STUCK_THRESHOLD}"
         )
-        print(f"temp={TEMPERATURE:.2f}  lr={LEARNING_RATE:.2e}  {_now_et()}")
+        print(f"temp={temperature:.2f}  lr={lr:.2e}  {_now_et()}")
         print(f"{'='*80}")
 
         # Per-turn accumulators — indexed [turn_idx][traj_idx]
@@ -613,15 +647,16 @@ def run_training(
             print(
                 f"STEP {global_step + 1} TURN {turn_num}/{NUM_TURNS}  ({problem_name})"
             )
-            print(f"temp={TEMPERATURE:.2f}  lr={LEARNING_RATE:.2e}  {_now_et()}")
+            print(f"temp={temperature:.2f}  lr={lr:.2e}  {_now_et()}")
             print(f"{'='*80}")
 
-            texts, prompt_ids, comp_ids = _generate(convs, MAX_NEW_TOKENS, TEMPERATURE)
+            texts, prompt_ids, comp_ids = _generate(convs, MAX_NEW_TOKENS, temperature)
             kernels = [extract_last_code(t, ["python", "cpp"]) for t in texts]
             summaries = [_extract_summary(t) for t in texts]
             old_logps = [_sum_logp_nograd(p, c) for p, c in zip(prompt_ids, comp_ids)]
             evals = _eval_batch(kernels, ref_code)
             rewards = [_compute_reward(e, k or "") for e, k in zip(evals, kernels)]
+            rewards = [r * _thinking_multiplier(t) for r, t in zip(rewards, texts)]
 
             if turn_idx == NUM_TURNS - 1:
                 for i in range(NUM_GENERATIONS):
@@ -735,7 +770,7 @@ def run_training(
         print(
             f"STEP {global_step + 1} SUMMARY  ({problem_name})  [problem {problem_idx + 1}/{len(train_ds)}]"
         )
-        print(f"temp={TEMPERATURE:.2f}  lr={LEARNING_RATE:.2e}  {_summary_time}")
+        print(f"temp={temperature:.2f}  lr={lr:.2e}  {_summary_time}")
         print(f"{bar}")
         print(f"  T1 correct   : {t1_correct} / {NUM_GENERATIONS}")
         print(f"  Any correct  : {any_correct} / {NUM_GENERATIONS}")
@@ -877,6 +912,18 @@ def run_training(
 def main(
     run_name: str = "qwen3-8b-kbl1-multiturn-v1-0p45t-3em5lr",
     resume_checkpoint: str = "",
+    resume_run: str = "",
     resume_stuck: int = 0,
+    temperature: float = TEMPERATURE,
+    lr: float = LEARNING_RATE,
+    thinking_budget: int = 1024,
 ):
-    run_training.remote(run_name=run_name, resume_checkpoint=resume_checkpoint, resume_stuck=resume_stuck)
+    run_training.remote(
+        run_name=run_name,
+        resume_checkpoint=resume_checkpoint,
+        resume_run=resume_run,
+        resume_stuck=resume_stuck,
+        temperature=temperature,
+        lr=lr,
+        thinking_budget=thinking_budget,
+    )

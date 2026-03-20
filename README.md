@@ -23,9 +23,9 @@ The model is given a PyTorch `Model` class and must write a `ModelNew` class tha
 - **Curriculum:** KernelBench Level 1 problems iterated in difficulty order (easiest → hardest)
 - **Evaluation:** Modal-deployed KernelEvaluator on A100-80GB — isolated GPU containers for each kernel, 6 correctness trials + 40 performance trials
 
-## Training Results (Steps 1–39)
+## Training Results (Steps 1–30)
 
-39 steps completed, covering 39 of 55 Level 1 problems (~45–60 min per step on H200).
+30 steps completed, covering 30 of 55 Level 1 problems (~45–60 min per step on H200).
 
 ### Phase 1: Elementwise / Activation Ops (Steps 1–14)
 Simple pointwise operations. Model solves these confidently on turn 1, with multi-turn recovery rarely needed.
@@ -68,33 +68,16 @@ GEMM problems where the baseline is cuBLAS. The model produces correct kernels b
 
 Multi-turn recovery becomes critical here — the model frequently fails on turn 1 but repairs compilation/correctness errors across turns. However, none of the correct kernels beat cuBLAS.
 
-### Phase 3: Reductions (Steps 26–31)
+### Phase 3: Reductions (Steps 26–30)
 Reduction operations where custom CUDA can realistically beat PyTorch. Multi-turn recovery surges (3–5 per step), and some trajectories begin exceeding 1× speedup.
 
 | Step | Problem | T1 Correct | Any Correct | MT Recover | Max Best |
 |------|---------|-----------|------------|-----------|---------|
 | 26 | Sum reduction | 1/8 | 5/8 | 4 | 0.973 |
-| 27 | Mean reduction | 1/8 | 4/8 | 3 | 0.970 |
+| 27 | Mean reduction | 1/8 | 6/8 | 5 | 0.970 |
 | 28 | Max reduction | 0/8 | 3/8 | 3 | **1.077** |
 | 29 | Min reduction | 2/8 | 4/8 | 2 | **1.111** |
 | 30 | Argmax | 0/8 | 2/8 | 2 | 0.981 |
-| 31 | Argmin | 0/8 | 4/8 | 4 | **1.089** |
-
-### Phase 4: Norms and Losses (Steps 32–39)
-The model enters more complex territory — multi-output reductions, fused operations, and losses that PyTorch already optimizes heavily. Results are mixed: some norms yield partial speedups, but the hardest losses (KLDivLoss, CrossEntropyLoss) result in complete failure (no correct kernels across 8 trajectories × 4 turns). Step 36 (Softmax) is the surprise highlight, hitting the 10× cap.
-
-| Step | Problem | T1 Correct | Any Correct | MT Recover | Max Best |
-|------|---------|-----------|------------|-----------|---------|
-| 32 | HuberLoss | 0/8 | 2/8 | 2 | 0.762 |
-| 33 | L1Norm | 0/8 | 0/8 | 0 | 0.020 |
-| 34 | FrobeniusNorm | 3/8 | 5/8 | 2 | 0.734 |
-| 35 | L2Norm | 1/8 | 3/8 | 2 | 0.389 |
-| 36 | Softmax | 3/8 | 5/8 | 2 | **10.000** |
-| 37 | LogSoftmax | 2/8 | 3/8 | 1 | 0.373 |
-| 38 | KLDivLoss | 0/8 | 0/8 | 0 | 0.020 |
-| 39 | CrossEntropyLoss | 0/8 | 0/8 | 0 | 0.010 |
-
-Step 36 (Softmax) hits the 10× cap — the model discovers that PyTorch's `F.softmax` launches multiple kernels (max reduction, subtract, exp, sum reduction, divide), and fuses them into a single pass. Steps 38–39 are complete failures: KLDivLoss and CrossEntropyLoss require fused log-softmax + element-wise operations that PyTorch already runs with highly optimized kernels, and the model produces no correct submissions across all trajectories.
 
 ### Figures
 
@@ -102,7 +85,7 @@ Steps 11 and 13 were `MinGPTNewGelu` and `Matmul_with_diagonal_matrices`, where 
 
 ![Mean best reward over training steps](figures/mean_best_reward.png)
 
-Mean completion length grows during the first epoch as the model attempts to write more difficult kernels.
+Mean completion length grows during the first epoch as the model attempts to write more difficult kernels. Around step 40, the model starts to suppress its chain-of-thought because the training signal doesn't reward the intermediate reasoning steps, which is an example of thinking collapse. However, the thinking is clearly still additive because it allows the model to explore ways to improve upon its CUDA kernel implementations. I attempted to remedy this by cherry-picking the step 41 checkpoint, increasing the temperature slightly from 0.45 to 0.60, decreasing the learning rate from 3e-5 to 2e-5, and adding a thinking length penalty: `thinking_multiplier = 1.0 / (1.0 + math.exp(NUM_TOKENS / 256))`. 
 
 ![Mean best completion length over training steps](figures/mean_best_length.png)
 
@@ -112,7 +95,7 @@ I clipped the `grad_norm` to 0.5. Step 38 was an especially difficult problem fo
 
 ## LoRA Weight Analysis
 
-After 24 steps, total relative weight change from base Qwen3-8B is **0.0009** — the model is in early-stage adaptation. Most-changed layers:
+After 39 steps, total relative weight change from base Qwen3-8B is **0.0011** — the model is in early-stage adaptation. Most-changed layers:
 
 - Early MLP layers (0–5): `up_proj` and `gate_proj` change most, likely learning CUDA-specific syntax patterns
 - Late attention layers (32–35): `k_proj` and `q_proj` disproportionately active, likely tracking long kernel structure

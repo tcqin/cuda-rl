@@ -192,7 +192,9 @@ def load_kernelbench_dataset(
 
 if __name__ == "__main__":
     train_ds, test_ds = load_kernelbench_dataset(level=1, difficulty_sort=True)
-    print(f"Train: {len(train_ds)} problems, Test: {len(test_ds)} problems")
-    print("Problems in order:")
+    print(f"Train: {len(train_ds)} problems")
     for p in train_ds:
+        print(f"  {p['problem_name']}")
+    print(f"\nTest: {len(test_ds)} problems")
+    for p in test_ds:
         print(f"  {p['problem_name']}")
