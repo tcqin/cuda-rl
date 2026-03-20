@@ -85,7 +85,7 @@ Steps 11 and 13 were `MinGPTNewGelu` and `Matmul_with_diagonal_matrices`, where 
 
 ![Mean best reward over training steps](figures/mean_best_reward.png)
 
-Mean completion length grows during the first epoch as the model attempts to write more difficult kernels. Around step 40, the model starts to suppress its chain-of-thought because the training signal doesn't reward the intermediate reasoning steps, which is an example of thinking collapse. However, the thinking is clearly still additive because it allows the model to explore ways to improve upon its CUDA kernel implementations. I attempted to remedy this by cherry-picking the step 41 checkpoint, increasing the temperature slightly from 0.45 to 0.60, decreasing the learning rate from 3e-5 to 2e-5, and adding a thinking length penalty: `thinking_multiplier = 1.0 / (1.0 + math.exp(NUM_TOKENS / 256))`. 
+Mean completion length grows during the first epoch as the model attempts to write more difficult kernels. Around step 42, the model starts to suppress its chain-of-thought because the training signal doesn't reward the intermediate reasoning steps, which is an example of thinking collapse. However, the thinking is clearly still additive because it allows the model to explore ways to improve upon its CUDA kernel implementations. I attempted to remedy this by cherry-picking the step 42 checkpoint, increasing the temperature slightly from 0.45 to 0.60, decreasing the learning rate from 3e-5 to 2e-5, and adding a thinking length penalty: `thinking_multiplier = 1.0 / (1.0 + math.exp(NUM_TOKENS / 256))`. 
 
 ![Mean best completion length over training steps](figures/mean_best_length.png)
 
