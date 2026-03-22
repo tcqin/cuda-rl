@@ -26,7 +26,64 @@ The model is given a PyTorch `Model` class and must write a `ModelNew` class tha
 
 ## Training Results (Steps 1–54)
 
-One full pass through all 54 Level 1 problems before switching to a new training run, after which I tried experimenting with a higher temperature and a slower learning rate to fine-tune the model further.
+One full pass through all 54 Level 1 problems before switching to a new training run, after which I tried experimenting with a higher temperature and a slower learning rate to fine-tune the model further. After step 54, 3 consecutive stuck steps triggered a curriculum reset — the model restarted from the easiest problem (ReLU). You can see detailed per-prompt results at the bottom of this page.
+
+![Results of v1 models](figures/results_v1.png)
+
+The **tier breakdown** (bottom chart) tells the clearest story - activations are by far the easiest tier. The gap between T1 correct (solid) and any correct (faded) in each tier shows how much multi-turn recovery is contributing. It's most valuable in the matmul and reduction tiers. **Response length** tracks difficulty well - the model uses 1500-3000 tokens on simple activations, and 4000-6000 tokens as the difficulty increases. The drop-off at the end of the chart shows **thinking collapse** where the model learned to suppress `<think>` blocks because shorter completions reduced variance without hurting reward much. I later ran a v2 training run to further fine-tune the model with a sigmoid thinking length penalty: `thinking_multiplier = 1 / (1 + exp(-N_tokens / 256))`, which applies a 0.5× multiplier at zero thinking tokens and approaches 1.0 above ~1024 tokens.
+
+## LoRA Weight Analysis
+
+After 54 steps, total relative weight change from base Qwen3-8B is **0.0013** — the model is in early-stage adaptation. Most-changed layers:
+
+- Early MLP layers (0–5): `up_proj` and `gate_proj` change most, likely learning CUDA-specific syntax patterns
+- Late attention layers (32–35): `k_proj` and `q_proj` disproportionately active, likely tracking long kernel structure
+- `down_proj` layers systematically change ~3× less than `up_proj`/`gate_proj` across all depths
+- The slope is remarkably consistent at ~0.52-0.58 per step throughout the epoch, with only very slight deceleration toward the end
+- The percentage scale shows the model drifted from 0.08% to 0.13% of the total parameter norm, small given LoRA's low-rank constraint
+
+![Cumulative LoRA delta norm over training steps](figures/delta_norm_v1.png)
+
+## Evaluation
+
+I evaluate how well the model performs on a held-out test set of 7 problems from Kernelbench Level 1 at various checkpoints. For multi-turn evaluation, I spin up 8 trajectories for each prompt, each with 4 turns. Each trajectory is scored based on the max reward any of its turns is able to generate. The per-prompt score is the mean of the top 2 trajectories for that prompt. All evaluations were run with a temperature of 0.45. The matrix multiplication problems all show consistent monotonic improvement across checkpoints. ELU is essentially saturated at all checkpoints - the model already knew how to write elementwise activation kernels before training began.
+
+![Evaluation of v1 models](figures/evaluation_v1.png)
+
+## Repository Structure
+
+```
+train/
+  train_multiturn.py   # Main multi-turn GRPO training script
+  train_grpo.py        # Earlier single-turn GRPO (reference)
+  reward.py            # Modal-based reward function
+  dataset.py           # KernelBench dataset loader with difficulty ordering
+  test_reward.py       # End-to-end reward function test
+analyze_checkpoint.py  # Per-layer LoRA weight delta analysis
+sync_checkpoints.sh    # Download checkpoints from Modal volume
+KernelBench/           # Submodule: ScalingIntelligence/KernelBench
+kernelbench-tinker/    # Submodule: ScalingIntelligence/kernelbench-tinker
+```
+
+## Setup
+
+```bash
+# Install dependencies
+pip install torch transformers trl peft accelerate wandb modal
+
+# Deploy the kernel evaluator to Modal
+cd kernelbench-tinker
+modal deploy src/kernelbench_tinker/modal/app.py
+
+# Create Modal secrets
+modal secret create wandb-secret WANDB_API_KEY=...
+modal secret create hf-secret HF_TOKEN=...
+
+# Run training
+modal run --detach train/train_multiturn.py
+```
+
+## Detailed epoch 1 results
 
 ### Phase 1: Elementwise / Activation Ops (Steps 1–14)
 Simple pointwise operations. Model solves these confidently on turn 1, with multi-turn recovery rarely needed.
@@ -129,60 +186,3 @@ Cumulative operations that are inherently hard to parallelize. The model's CUDA 
 |------|---------|-----------|------------|-----------|----------|---------|
 | 53 | 3D conv (square) | 0/8 | 0/8 | 0 | 0.016 | 0.020 |
 | 54 | 3D conv (asymmetric) | 0/8 | 0/8 | 0 | 0.014 | 0.020 |
-
-After step 54, 3 consecutive stuck steps triggered a curriculum reset — the model restarted from the easiest problem (ReLU).
-
-![Results of v1 models](figures/results_v1.png)
-
-The **tier breakdown** (bottom chart) tells the clearest story - activations are by far the easiest tier. The gap between T1 correct (solid) and any correct (faded) in each tier shows how much multi-turn recovery is contributing. It's most valuable in the matmul and reduction tiers. **Response length** tracks difficulty well - the model uses 1500-3000 tokens on simple activations, and 4000-6000 tokens as the difficulty increases. The drop-off at the end of the chart shows **thinking collapse** where the model learned to suppress `<think>` blocks because shorter completions reduced variance without hurting reward much. I later ran a v2 training run to further fine-tune the model with a sigmoid thinking length penalty: `thinking_multiplier = 1 / (1 + exp(-N_tokens / 256))`, which applies a 0.5× multiplier at zero thinking tokens and approaches 1.0 above ~1024 tokens.
-
-## LoRA Weight Analysis
-
-After 54 steps, total relative weight change from base Qwen3-8B is **0.0013** — the model is in early-stage adaptation. Most-changed layers:
-
-- Early MLP layers (0–5): `up_proj` and `gate_proj` change most, likely learning CUDA-specific syntax patterns
-- Late attention layers (32–35): `k_proj` and `q_proj` disproportionately active, likely tracking long kernel structure
-- `down_proj` layers systematically change ~3× less than `up_proj`/`gate_proj` across all depths
-- The slope is remarkably consistent at ~0.52-0.58 per step throughout the epoch, with only very slight deceleration toward the end
-- The percentage scale shows the model drifted from 0.08% to 0.13% of the total parameter norm, small given LoRA's low-rank constraint
-
-![Cumulative LoRA delta norm over training steps](figures/delta_norm_v1.png)
-
-## Evaluation
-
-I evaluate how well the model performs on a held-out test set of 7 problems from Kernelbench Level 1 at various checkpoints. For multi-turn evaluation, I spin up 8 trajectories for each prompt, each with 4 turns. Each trajectory is scored based on the max reward any of its turns is able to generate. The per-prompt score is the mean of the top 2 trajectories for that prompt. All evaluations were run with a temperature of 0.45. The matrix multiplication problems all show consistent monotonic improvement across checkpoints. ELU is essentially saturated at all checkpoints - the model already knew how to write elementwise activation kernels before training began.
-
-![Evaluation of v1 models](figures/evaluation_v1.png)
-
-## Repository Structure
-
-```
-train/
-  train_multiturn.py   # Main multi-turn GRPO training script
-  train_grpo.py        # Earlier single-turn GRPO (reference)
-  reward.py            # Modal-based reward function
-  dataset.py           # KernelBench dataset loader with difficulty ordering
-  test_reward.py       # End-to-end reward function test
-analyze_checkpoint.py  # Per-layer LoRA weight delta analysis
-sync_checkpoints.sh    # Download checkpoints from Modal volume
-KernelBench/           # Submodule: ScalingIntelligence/KernelBench
-kernelbench-tinker/    # Submodule: ScalingIntelligence/kernelbench-tinker
-```
-
-## Setup
-
-```bash
-# Install dependencies
-pip install torch transformers trl peft accelerate wandb modal
-
-# Deploy the kernel evaluator to Modal
-cd kernelbench-tinker
-modal deploy src/kernelbench_tinker/modal/app.py
-
-# Create Modal secrets
-modal secret create wandb-secret WANDB_API_KEY=...
-modal secret create hf-secret HF_TOKEN=...
-
-# Run training
-modal run --detach train/train_multiturn.py
-```
