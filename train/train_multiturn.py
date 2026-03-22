@@ -226,10 +226,37 @@ def _feedback_message(eval_result: dict, kernel: str | None, text: str) -> str:
         msg += "Please debug and fix the correctness issue."
         return msg
     spd = eval_result.get("speedup") or 0.0
-    return (
-        f"Your kernel is correct with speedup {spd:.3f}x vs PyTorch. "
-        "Please optimize it further to achieve higher speedup."
-    )
+    if spd >= 1.0:
+        return (
+            f"Your kernel is correct with speedup {spd:.3f}x vs PyTorch — you are beating the baseline. "
+            "Push it further: try vectorized loads (float4) to saturate memory bandwidth, "
+            "increase thread coarsening so each thread handles multiple elements, "
+            "or use __shfl_xor_sync warp shuffles to eliminate shared memory overhead in reductions."
+        )
+    elif spd >= 0.5:
+        return (
+            f"Your kernel is correct but slower than PyTorch ({spd:.3f}x). "
+            "To close the gap: "
+            "(1) ensure all global memory accesses are coalesced — threads in a warp must access consecutive addresses; "
+            "(2) use vectorized loads (float4 / float2) to increase memory throughput; "
+            "(3) use shared memory to avoid redundant global reads when data is reused; "
+            "(4) try thread coarsening — have each thread process 2–4 elements to improve arithmetic intensity."
+        )
+    else:
+        return (
+            f"Your kernel is correct but significantly slower than PyTorch ({spd:.3f}x). "
+            "This usually indicates a structural bottleneck — consider a full redesign: "
+            "(1) for reductions: avoid per-element atomicAdd — use warp shuffle reduction "
+            "(__shfl_xor_sync) within each warp, then one atomic per warp into a block accumulator, "
+            "then a second kernel or atomic for the final block-level reduction; "
+            "(2) for elementwise ops: ensure threads access consecutive memory addresses and "
+            "use float4 vectorized loads to process 4 elements per thread; "
+            "(3) for multi-pass ops (norm, softmax): fuse passes into a single kernel using online "
+            "algorithms (e.g. online softmax, Welford's algorithm for mean/variance) to avoid "
+            "multiple global memory round-trips; "
+            "(4) check occupancy — use 128 or 256 threads/block and ensure register usage is not "
+            "limiting the number of resident warps."
+        )
 
 
 # =============================================================================
@@ -251,7 +278,7 @@ def run_training(
     run_name: str = "qwen3-8b-kbl1-multiturn-v1-0p45t-3em5lr",
     resume_checkpoint: str = "",
     resume_run: str = "",
-    resume_stuck: int = 0,
+    resume_stuck: int | None = None,
     temperature: float = TEMPERATURE,
     lr: float = LEARNING_RATE,
     thinking_budget: int = 1024,
@@ -538,16 +565,16 @@ def run_training(
     os.makedirs(output_dir, exist_ok=True)
     optimizer.zero_grad()
 
-    consecutive_stuck = resume_stuck
     reset_count = 0
     if resume_checkpoint:
-        if resume_run:
+        if resume_run and resume_run != run_name:
             # Cross-run resume: load weights from another run but start curriculum fresh
             print(
                 f"Cross-run resume from {resume_run}/{resume_checkpoint} — starting curriculum from beginning"
             )
             global_step = 0
             problem_idx = 0
+            consecutive_stuck = resume_stuck
         else:
             state_path = f"/runs/{run_name}/{resume_checkpoint}/state.json"
             if os.path.exists(state_path):
@@ -555,8 +582,9 @@ def run_training(
                     state = json.load(f)
                 global_step = state["global_step"]
                 problem_idx = state["problem_idx"]
+                consecutive_stuck = resume_stuck if resume_stuck is not None else state.get("consecutive_stuck", 0)
                 print(
-                    f"Resumed from state.json: global_step={global_step}, problem_idx={problem_idx}"
+                    f"Resumed from state.json: global_step={global_step}, problem_idx={problem_idx}, consecutive_stuck={consecutive_stuck}"
                 )
             else:
                 # No state.json — infer from checkpoint name (e.g. "step_20" → 20)
@@ -568,6 +596,7 @@ def run_training(
                         "Expected format: step_N"
                     )
                 problem_idx = global_step % len(train_ds)
+                consecutive_stuck = resume_stuck
                 print(
                     f"No state.json found — inferred global_step={global_step}, problem_idx={problem_idx}"
                 )
@@ -575,6 +604,7 @@ def run_training(
     else:
         problem_idx = 0
         global_step = 0
+        consecutive_stuck = resume_stuck
 
     # ── Training loop ─────────────────────────────────────────────────────────
     while True:
@@ -913,7 +943,7 @@ def main(
     run_name: str = "qwen3-8b-kbl1-multiturn-v1-0p45t-3em5lr",
     resume_checkpoint: str = "",
     resume_run: str = "",
-    resume_stuck: int = 0,
+    resume_stuck: int | None = None,
     temperature: float = TEMPERATURE,
     lr: float = LEARNING_RATE,
     thinking_budget: int = 1024,

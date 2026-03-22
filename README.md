@@ -19,13 +19,14 @@ The model is given a PyTorch `Model` class and must write a `ModelNew` class tha
 
 - **Model:** Qwen3-8B with LoRA (rank 64, all projection layers)
 - **Algorithm:** Multi-turn GRPO — 8 trajectories × 4 turns per problem, discounted returns (γ=0.4), per-turn advantage normalization
-- **Training:** H200, constant temperature=0.45, LR=3e-5, reference-free (β=0.0)
+- **Training:** Run on [Modal](https://modal.com) using H200 GPUs, LR=3e-5, reference-free (β=0.0)
+- **Temperature:** I experimented with a variety of temperatures on the base Qwen3-8B model on one of the matrix multiplication prompts, and decided to go with a temperature of 0.45 seeing more stable kernels being generated at this temperature
 - **Curriculum:** KernelBench Level 1 problems iterated in difficulty order (easiest → hardest)
 - **Evaluation:** Modal-deployed KernelEvaluator on A100-80GB — isolated GPU containers for each kernel, 6 correctness trials + 40 performance trials
 
-## Training Results (Steps 1–66)
+## Training Results (Steps 1–54)
 
-66 steps completed: one full pass through all 55 Level 1 problems, then 12 steps into a second epoch before switching to a new training run.
+One full pass through all 55 Level 1 problems before switching to a new training run, after which I tried experimenting with a higher temperature and a slower learning rate to fine-tune the model further.
 
 ### Phase 1: Elementwise / Activation Ops (Steps 1–14)
 Simple pointwise operations. Model solves these confidently on turn 1, with multi-turn recovery rarely needed.
@@ -132,7 +133,7 @@ Cumulative operations that are inherently hard to parallelize. The model's CUDA 
 After step 54, 3 consecutive stuck steps triggered a curriculum reset — the model restarted from the easiest problem (ReLU).
 
 ### Epoch 2 (Steps 55–66)
-Second pass through the curriculum after the curriculum reset. The elementwise problems are almost fully solved on turn 1 — a clear sign of retained learning — but mean completion length has collapsed to ~500–1800 tokens (vs. ~2000–6000 in epoch 1), indicating thinking collapse. This run was terminated at step 66 to start a new run (`qwen3-8b-kbl1-mt-v2`) initialized from the step 51 checkpoint, with higher temperature (0.6), lower LR (2e-5), larger thinking budget (4096 tokens), and a thinking length penalty.
+Second pass through the curriculum after the curriculum reset. This model (`qwen3-8b-kbl1-mt-v2`) was further trained using a slightly higher temperature (0.60) to get more variance in the kernel implementations and a slightly lower learning rate (2e-5) to fine tune further. The elementwise problems are almost fully solved on turn 1 — a clear sign of retained learning. We saw evidence of thinking collapse as the model started repeating kernels without any `<think>` block, so we added a sigmoid-based thinking length penalty: `thinking_multiplier = 1 / (1 + exp(-N_tokens / 256))`, which applies a 0.5× multiplier at zero thinking tokens and approaches 1.0 above ~1024 tokens.
 
 | Step | Problem | T1 Correct | Any Correct | MT Recover | Mean Best | Max Best | Mean Len |
 |------|---------|-----------|------------|-----------|----------|---------|---------|
@@ -172,6 +173,12 @@ After 66 steps, total relative weight change from base Qwen3-8B is **0.0015** �
 - `down_proj` layers systematically change ~3× less than `up_proj`/`gate_proj` across all depths
 
 ![Cumulative LoRA delta norm over training steps](figures/delta_norm.png)
+
+## Evaluation
+
+I evaluate how well the model performs on a held-out test set of 7 problems from Kernelbench Level 1 at various checkpoints. For multi-turn evaluation, I spin up 8 trajectories for each prompt, each with 4 turns. Each trajectory is scored based on the max reward any of its turns is able to generate. The per-prompt score is the mean of the top 2 trajectories for that prompt. The matrix multiplication problems all show consistent monotonic improvement across checkpoints. ELU is essentially saturated at all checkpoints - the model already knew how to write elementwise activation kernels before training began.
+
+![Evaluation of v1 models](figures/evaluation_v1.png)
 
 ## Repository Structure
 
