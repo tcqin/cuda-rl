@@ -26,7 +26,7 @@ The model is given a PyTorch `Model` class and must write a `ModelNew` class tha
 
 ## Training Results (Steps 1–54)
 
-One full pass through all 55 Level 1 problems before switching to a new training run, after which I tried experimenting with a higher temperature and a slower learning rate to fine-tune the model further.
+One full pass through all 54 Level 1 problems before switching to a new training run, after which I tried experimenting with a higher temperature and a slower learning rate to fine-tune the model further.
 
 ### Phase 1: Elementwise / Activation Ops (Steps 1–14)
 Simple pointwise operations. Model solves these confidently on turn 1, with multi-turn recovery rarely needed.
@@ -138,13 +138,15 @@ The **tier breakdown** (bottom chart) tells the clearest story - activations are
 
 ## LoRA Weight Analysis
 
-After 54 steps, total relative weight change from base Qwen3-8B is **0.0014** — the model is in early-stage adaptation. Most-changed layers:
+After 54 steps, total relative weight change from base Qwen3-8B is **0.0013** — the model is in early-stage adaptation. Most-changed layers:
 
 - Early MLP layers (0–5): `up_proj` and `gate_proj` change most, likely learning CUDA-specific syntax patterns
 - Late attention layers (32–35): `k_proj` and `q_proj` disproportionately active, likely tracking long kernel structure
 - `down_proj` layers systematically change ~3× less than `up_proj`/`gate_proj` across all depths
+- The slope is remarkably consistent at ~0.52-0.58 per step throughout the epoch, with only very slight deceleration toward the end
+- The percentage scale shows the model drifted from 0.08% to 0.13% of the total parameter norm, small given LoRA's low-rank constraint
 
-![Cumulative LoRA delta norm over training steps](figures/delta_norm.png)
+![Cumulative LoRA delta norm over training steps](figures/delta_norm_v1.png)
 
 ## Evaluation
 
