@@ -150,7 +150,7 @@ After 54 steps, total relative weight change from base Qwen3-8B is **0.0013** â€
 
 ## Evaluation
 
-I evaluate how well the model performs on a held-out test set of 7 problems from Kernelbench Level 1 at various checkpoints. For multi-turn evaluation, I spin up 8 trajectories for each prompt, each with 4 turns. Each trajectory is scored based on the max reward any of its turns is able to generate. The per-prompt score is the mean of the top 2 trajectories for that prompt. The matrix multiplication problems all show consistent monotonic improvement across checkpoints. ELU is essentially saturated at all checkpoints - the model already knew how to write elementwise activation kernels before training began.
+I evaluate how well the model performs on a held-out test set of 7 problems from Kernelbench Level 1 at various checkpoints. For multi-turn evaluation, I spin up 8 trajectories for each prompt, each with 4 turns. Each trajectory is scored based on the max reward any of its turns is able to generate. The per-prompt score is the mean of the top 2 trajectories for that prompt. All evaluations were run with a temperature of 0.45. The matrix multiplication problems all show consistent monotonic improvement across checkpoints. ELU is essentially saturated at all checkpoints - the model already knew how to write elementwise activation kernels before training began.
 
 ![Evaluation of v1 models](figures/evaluation_v1.png)
 
