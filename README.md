@@ -22,7 +22,7 @@ The model is given a PyTorch `Model` class and must write a `ModelNew` class tha
 - **Training:** Run on [Modal](https://modal.com) using H200 GPUs, LR=3e-5, reference-free (β=0.0)
 - **Temperature:** I experimented with a variety of temperatures on the base Qwen3-8B model on one of the matrix multiplication prompts, and decided to go with a temperature of 0.45 seeing more stable kernels being generated at this temperature
 - **Curriculum:** KernelBench Level 1 problems iterated in difficulty order (easiest → hardest)
-- **Evaluation:** Modal-deployed KernelEvaluator on A100-80GB — isolated GPU containers for each kernel, 6 correctness trials + 40 performance trials
+- **Evaluation:** [Modal](https://modal.com)-deployed KernelEvaluator on A100-80GB — isolated GPU containers for each kernel, 6 correctness trials + 40 performance trials
 
 ## Training Results (Steps 1–54)
 
