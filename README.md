@@ -132,41 +132,13 @@ Cumulative operations that are inherently hard to parallelize. The model's CUDA 
 
 After step 54, 3 consecutive stuck steps triggered a curriculum reset — the model restarted from the easiest problem (ReLU).
 
-### Epoch 2 (Steps 55–66)
-Second pass through the curriculum after the curriculum reset. This model (`qwen3-8b-kbl1-mt-v2`) was further trained using a slightly higher temperature (0.60) to get more variance in the kernel implementations and a slightly lower learning rate (2e-5) to fine tune further. The elementwise problems are almost fully solved on turn 1 — a clear sign of retained learning. We saw evidence of thinking collapse as the model started repeating kernels without any `<think>` block, so we added a sigmoid-based thinking length penalty: `thinking_multiplier = 1 / (1 + exp(-N_tokens / 256))`, which applies a 0.5× multiplier at zero thinking tokens and approaches 1.0 above ~1024 tokens.
+![Results of v1 models](figures/results_v1.png)
 
-| Step | Problem | T1 Correct | Any Correct | MT Recover | Mean Best | Max Best | Mean Len |
-|------|---------|-----------|------------|-----------|----------|---------|---------|
-| 55 | ReLU | 8/8 | 8/8 | 0 | 0.954 | 0.957 | 1447 |
-| 56 | LeakyReLU | 8/8 | 8/8 | 0 | 0.954 | 0.963 | 1840 |
-| 57 | HardTanh | 8/8 | 8/8 | 0 | 0.954 | 0.958 | 947 |
-| 58 | Tanh | 8/8 | 8/8 | 0 | 0.926 | 0.940 | 497 |
-| 59 | Sigmoid | 7/8 | 7/8 | 0 | 0.817 | 0.937 | 595 |
-| 60 | Softsign | 8/8 | 8/8 | 0 | **3.146** | **3.159** | 721 |
-| 61 | Swish | 8/8 | 8/8 | 0 | 2.177 | 2.220 | 595 |
-| 62 | SELU | 2/8 | 3/8 | 1 | 0.367 | 0.954 | 795 |
-| 63 | Softplus | 8/8 | 8/8 | 0 | 0.913 | 0.955 | 466 |
-| 64 | HardSigmoid | 0/8 | 1/8 | 1 | 0.137 | 0.955 | 905 |
-| 65 | GELU | 0/8 | 3/8 | 3 | 0.347 | 0.905 | 496 |
-| 66 | MinGPTNewGelu | 3/8 | 4/8 | 1 | 3.558 | **7.647** | 673 |
-
-### Figures
-
-Steps 12 and 14 (`MinGPTNewGelu` and `Matmul_with_diagonal_matrices`) are the standout examples where the PyTorch baseline is doing far more work than necessary. In `MinGPTNewGelu`, PyTorch executes the expression as ~5 separate elementwise kernel launches; the model fuses them into one. In `Matmul_with_diagonal_matrices`, PyTorch does a full O(N³) multiply when the operation is really just elementwise row-scaling. Step 36 (`Softmax`) achieves 10× via online softmax — fusing the max, sum, and normalize passes.
-
-![Mean best reward over training steps](figures/mean_best_reward.png)
-
-Mean completion length grows during the first epoch as the model attempts progressively harder kernels, then collapses sharply in epoch 2 — an example of thinking collapse. The model learned to suppress `<think>` blocks because shorter completions reduced variance without hurting reward enough. The new run addresses this with a sigmoid thinking length penalty: `thinking_multiplier = 1 / (1 + exp(-N_tokens / 256))`, which applies a 0.5× multiplier at zero thinking tokens and approaches 1.0 above ~1024 tokens.
-
-![Mean best completion length over training steps](figures/mean_best_length.png)
-
-Grad norm is clipped to 0.5. Step 39 (`CrossEntropyLoss`) and steps 53–54 (3D convolutions) were the hardest problems — zero correct kernels across all 8 trajectories and 4 turns.
-
-![Grad norm over training steps](figures/grad_norm.png)
+The **tier breakdown** (bottom chart) tells the clearest story - activations are by far the easiest tier. The gap between T1 correct (solid) and any correct (faded) in each tier shows how much multi-turn recovery is contributing. It's most valuable in the matmul and reduction tiers. **Response length** tracks difficulty well - the model uses 1500-3000 tokens on simple activations, and 4000-6000 tokens as the difficulty increases. The drop-off at the end of the chart shows **thinking collapse** where the model learned to suppress `<think>` blocks because shorter completions reduced variance without hurting reward much. I later ran a v2 training run to further fine-tune the model with a sigmoid thinking length penalty: `thinking_multiplier = 1 / (1 + exp(-N_tokens / 256))`, which applies a 0.5× multiplier at zero thinking tokens and approaches 1.0 above ~1024 tokens.
 
 ## LoRA Weight Analysis
 
-After 66 steps, total relative weight change from base Qwen3-8B is **0.0015** — the model is in early-stage adaptation. Most-changed layers:
+After 54 steps, total relative weight change from base Qwen3-8B is **0.0014** — the model is in early-stage adaptation. Most-changed layers:
 
 - Early MLP layers (0–5): `up_proj` and `gate_proj` change most, likely learning CUDA-specific syntax patterns
 - Late attention layers (32–35): `k_proj` and `q_proj` disproportionately active, likely tracking long kernel structure
